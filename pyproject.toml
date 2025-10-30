@@ -1,0 +1,24 @@
+
+[project]
+name = "SCN"
+version = "0.0.1"
+dependencies = [
+    "numpy",
+    "matplotlib",
+    "cvxpy",
+]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+
+[tool.isort]
+profile="black"
+
+[project.optional-dependencies]
+docs = [
+    "sphinx",
+    "sphinx-design",
+    "pydata_sphinx_theme",
+]

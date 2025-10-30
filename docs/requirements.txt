@@ -1,0 +1,9 @@
+gekko
+matplotlib
+numpy
+pydata-sphinx-theme
+scipy
+sphinx
+sphinx-autodoc-typehints
+sphinx-design
+sphinx-rtd-theme
