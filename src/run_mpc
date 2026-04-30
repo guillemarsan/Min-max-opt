@@ -1,0 +1,174 @@
+import argparse
+import json
+import random
+import string
+import time
+
+import numpy as np
+from SCN import Simulation
+
+from utils.problems import (
+    mpc_problem_2D,
+    mpc_problem_2Dtraj,
+    mpc_problem_plot_2D,
+    mpc_problem_plot_2Dtraj,
+    mpc_problem_plot_pv,
+    mpc_problem_pv,
+)
+
+if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser("Simulation of one point for MPC task")
+    parser.add_argument(
+        "--case", type=str, default="2D", help="Type of MPC problem: pv, 2D, 2Dtraj"
+    )
+
+    parser.add_argument(
+        "--rand_seed",
+        type=int,
+        default=19,
+        help="Random seed for the sampling of parameters",
+    )
+
+    parser.add_argument(
+        "--dir", type=str, default="./data/test/mpc/", help="Directory to dump output"
+    )
+    parser.add_argument(
+        "--plot", action="store_true", default=True, help="Plot the results"
+    )
+    parser.add_argument(
+        "--save_sim", action="store_true", default=False, help="Save the simulation"
+    )
+    parser.add_argument(
+        "--save_outputs",
+        action="store_true",
+        default=False,
+        help="Save the simulation outputs",
+    )
+    parser.add_argument(
+        "--save_config",
+        action="store_true",
+        default=False,
+        help="Save the script configuration",
+    )
+
+    args = parser.parse_args()
+
+    timestr = time.strftime("%Y%m%d-%H%M%S")
+    code = "".join(random.choice(string.ascii_letters) for i in range(5))
+    name = timestr + "-" + code + "-s-" + str(args.rand_seed)
+    basepath = args.dir + name
+
+    # PROBLEM PARAMETERS
+    if args.case == "pv":
+        Q, b, E, Tp, problem = mpc_problem_pv()
+    elif args.case == "2D":
+        Q, b, E, Tp, problem = mpc_problem_2D()
+    elif args.case == "2Dtraj":
+        Q, b, E, Tp, problem = mpc_problem_2Dtraj()
+    else:
+        raise ValueError("Case not recognized")
+
+    if args.case in ["pv", "2D"]:
+        spike_scale = 0.02
+    else:
+        spike_scale = 0.15
+
+    # Initialize simulation
+    sim = Simulation.init_optim(
+        Q=Q,
+        b=b,
+        E=E,
+        Tp=Tp,
+        spike_scale=spike_scale,
+        Tmax=5,
+    )
+
+    # RUN SIMULATION
+    # run simulation
+    sim.run(draw_break="no")
+
+    # optimize simulation
+    sim.optimize(Q=Q)
+
+    # Plot
+    if args.plot:
+        # Get the last feasible point before a spike
+        last_feas_before_spike = np.setdiff1d(
+            np.arange(sim.stimes[-1, 1] / sim.dt),
+            np.round(sim.stimes[:, 1] / sim.dt).astype(int),
+        )
+        if len(last_feas_before_spike) == 0:
+            last_feas_before_spike = -1
+            # raise ValueError("No feasible point")
+        else:
+            last_feas_before_spike = int(last_feas_before_spike[-1])
+
+        sim.plot()
+        if args.case == "pv":
+            mpc_problem_plot_pv(
+                sim.y_op_lim[:, -1], sim.y[:, last_feas_before_spike], problem, basepath
+            )
+        elif args.case == "2D":
+            mpc_problem_plot_2D(
+                sim.y_op_lim[:, -1], sim.y[:, last_feas_before_spike], problem, basepath
+            )
+        elif args.case == "2Dtraj":
+            mpc_problem_plot_2Dtraj(
+                sim.y_op_lim[:, -1], sim.y[:, last_feas_before_spike], problem, basepath
+            )
+
+    ## RESULTS
+    results = {}
+
+    if args.save_sim:
+        # Save simulation
+        print("Saving simulation...")
+        sim.save(args.dir, name)
+
+    if args.save_outputs:
+        # Save results
+        if hasattr(sim, "y"):
+            np.savetxt("%s-y.csv" % basepath, sim.y, fmt="%.3e")
+        if hasattr(sim, "y_op"):
+            np.savetxt("%s-y_op.csv" % basepath, sim.y_op[:, -1], fmt="%.3e")
+        if hasattr(sim, "y_op_lim"):
+            np.savetxt("%s-y_op_lim.csv" % basepath, sim.y_op_lim[:, -1], fmt="%.3e")
+
+        if hasattr(sim, "r"):
+            np.savetxt("%s-r.csv" % basepath, sim.r, fmt="%.3e")
+        if hasattr(sim, "r_op"):
+            np.savetxt("%s-r_op.csv" % basepath, sim.r_op[:, -1], fmt="%.3e")
+        if hasattr(sim, "r_op_lim"):
+            np.savetxt("%s-r_op_lim.csv" % basepath, sim.r_op_lim[:, -1], fmt="%.3e")
+
+        if hasattr(sim, "stimes"):
+            np.savetxt("%s-stimes.csv" % basepath, sim.stimes, fmt="%.3e")
+        if hasattr(sim, "V"):
+            np.savetxt("%s-V.csv" % basepath, sim.V, fmt="%.3e")
+
+    if args.save_config:
+        results["name"] = name
+        results["dir"] = args.dir
+        results["basepath"] = basepath
+        results["args"] = vars(args)
+        results["Q"] = Q.tolist()
+        results["b"] = b.tolist()
+        results["E"] = E.tolist()
+        results["D"] = sim.net.D.tolist()
+        results["Tp"] = Tp.tolist()
+        results["spike_scale"] = spike_scale
+        results["Tmax"] = sim.Tmax
+        results["dt"] = sim.dt
+
+        if hasattr(sim, "r"):
+            case = (
+                "silent"
+                if np.max(sim.r[:, -1]) == 0
+                else ("exploding" if np.max(sim.r[:, -1]) > 1 / sim.dt else "normal")
+            )
+            results["spiking_case"] = case
+
+        filepath = "%s.json" % basepath
+        with open(filepath, "w") as file_handle:
+            json.dump(results, file_handle, indent=4)
