@@ -120,7 +120,7 @@ def random_problem_ccvcvx(
     - Q_bb < 0
 
     Return also its diagonal form
-    Q_diag = diag(Q_aa - Q_ab Q_bb^-1 Q_ab^T, Q_bb^-1)
+    Q_diag = diag(Q_aa - Q_ab Q_bb^-1 Q_ab^T, Q_bb)
 
     E_diag has num_ncoup non-coupled constraints w.r.t Q_diag
     (i.e. num_ncoup columns are orthogonal to all the eigenvectors with positive eigenvalues of Q_diag)
@@ -175,42 +175,59 @@ def random_problem_ccvcvx(
 
     np.random.seed(rand_seed)
 
+    def SPD_sample(n):
+        A = np.random.randn(n, n)
+        alpha = np.random.uniform(1.5, 3.0)
+        return (A.T + A) / (2 * np.sqrt(n)) + alpha * np.eye(n)
+
+    # def SPD_sample(n):
+    #     # Eigvals
+    #     eigvals = np.abs(np.random.randn(n))
+
+    #     # Random orthogonal Q
+    #     X = np.random.randn(n, n)
+    #     Q, R = np.linalg.qr(X)
+    #     Q *= np.sign(np.diag(R))
+
+    #     # Spectral construction
+    #     M = Q @ np.diag(eigvals) @ Q.T
+
+    #     return M
+
     # Choose randomly how many minimization and maximization variables
-    maxs = np.random.randint(1, lat_dim)
-    mins = lat_dim - maxs
+    mins = np.random.randint(1, lat_dim)
+    maxs = lat_dim - mins
 
-    # Generate random symmetric Q_bb < 0
-    A = np.random.randn(mins, mins)
-    Q_bb = -(A.T @ A)
+    # Generate random symmetric Q_bb > 0
+    Q_bb = SPD_sample(mins)
 
-    # Generate random Q_ab
-    Q_ab = np.random.randn(maxs, mins)
+    # Generate random Q_ba
+    Q_ba = np.random.randn(mins, maxs)
 
-    # Generate random Aux > 0
-    A = np.random.randn(maxs, maxs)
-    Aux = A.T @ A
-    # And now sample Q_aa s.t. Q_aa - Q_ab Q_bb^-1 Q_ab^T = Aux
-    Q_aa = Aux + Q_ab @ np.linalg.inv(Q_bb) @ Q_ab.T
+    # Generate random Aux < 0
+    Aux = -SPD_sample(maxs)
+    # And now sample Q_aa s.t. Q_aa - Q_ba.T Q_bb^-1 Q_ba = Aux
+    Q_aa = Aux + Q_ba.T @ np.linalg.inv(Q_bb) @ Q_ba
 
     # Make sure everything worked
-    assert np.all(np.linalg.eigvals(Q_aa - Q_ab @ np.linalg.inv(Q_bb) @ Q_ab.T) > 0)
-    assert np.all(np.linalg.eigvals(Q_bb) < 0)
+    assert np.all(np.linalg.eigvals(Q_aa - Q_ba.T @ np.linalg.inv(Q_bb) @ Q_ba) < 0)
+    assert np.all(np.linalg.eigvals(Q_bb) > 0)
 
     # Assemble Q
-    Q = np.block([[Q_aa, Q_ab], [Q_ab.T, Q_bb]])
+    Q = np.block([[Q_bb, Q_ba], [Q_ba.T, Q_aa]])
 
     # Generate random b
     b = np.random.randn(lat_dim)
 
     # Construct Q_diag
     Q_diag = np.zeros_like(Q)
-    Q_diag[:maxs, :maxs] = Q_aa - Q_ab @ np.linalg.inv(Q_bb) @ Q_ab.T
-    Q_diag[maxs:, maxs:] = np.linalg.inv(Q_bb)
+    Q_diag[:mins, :mins] = Q_bb
+    Q_diag[mins:, mins:] = Q_aa - Q_ba.T @ np.linalg.inv(Q_bb) @ Q_ba
 
     # Construct b_diag
     b_diag = np.zeros_like(b)
-    b_diag[:maxs] = b[:maxs] - Q_ab @ np.linalg.inv(Q_bb) @ b[maxs:]
-    b_diag[maxs:] = np.linalg.inv(Q_bb) @ b[maxs:]
+    b_diag[:mins] = b[:mins]
+    b_diag[mins:] = b[mins:] - Q_ba.T @ np.linalg.inv(Q_bb) @ b[:mins]
 
     # Generate E_diag with num_ncoup non-coupled constraints w.r.t Q_diag
     E_diag = np.random.randn(num_neur, lat_dim)
@@ -240,15 +257,15 @@ def random_problem_ccvcvx(
 
     # Construct E
     E = np.zeros_like(E_diag)
-    E[:, :maxs] = E_diag[:, :maxs]
-    E[:, maxs:] = (E_diag[:, maxs:] - E_diag[:, :maxs] @ Q_ab) @ np.linalg.inv(Q_bb)
+    E[:, :mins] = E_diag[:, :mins]
+    E[:, mins:] = E_diag[:, mins:] + E_diag[:, :mins] @ np.linalg.inv(Q_bb) @ Q_ba
 
     Tp = Tp_diag.copy()
 
     decoder = lambda x: np.vstack(
         (
-            x[:maxs, :],
-            np.linalg.inv(Q_bb) @ (x[maxs:, :] - Q_ab.T @ x[:maxs, :]),
+            x[:mins, :] - np.linalg.inv(Q_bb) @ Q_ba @ x[mins:, :],
+            x[mins:, :],
         )
     )
 
