@@ -10,8 +10,12 @@ from SCN import Simulation
 from utils.problems import (
     mpc_problem_2D,
     mpc_problem_2Dtraj,
+    mpc_problem_arm,
+    mpc_problem_ieee118,
     mpc_problem_plot_2D,
     mpc_problem_plot_2Dtraj,
+    mpc_problem_plot_arm,
+    mpc_problem_plot_ieee118,
     mpc_problem_plot_pv,
     mpc_problem_pv,
 )
@@ -20,7 +24,10 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser("Simulation of one point for MPC task")
     parser.add_argument(
-        "--case", type=str, default="2D", help="Type of MPC problem: pv, 2D, 2Dtraj"
+        "--case",
+        type=str,
+        default="arm",
+        help="Type of MPC problem: pv, 2D, 2Dtraj, ieee118, arm",
     )
 
     parser.add_argument(
@@ -66,11 +73,17 @@ if __name__ == "__main__":
         Q, b, E, Tp, problem = mpc_problem_2D()
     elif args.case == "2Dtraj":
         Q, b, E, Tp, problem = mpc_problem_2Dtraj()
+    elif args.case == "ieee118":
+        Q, b, E, Tp, problem = mpc_problem_ieee118()
+    elif args.case == "arm":
+        Q, b, E, Tp, problem = mpc_problem_arm()
     else:
         raise ValueError("Case not recognized")
 
     if args.case in ["pv", "2D"]:
         spike_scale = 0.02
+    elif args.case in ["ieee118", "arm"]:
+        spike_scale = 0.5
     else:
         spike_scale = 0.15
 
@@ -89,14 +102,14 @@ if __name__ == "__main__":
     sim.run(draw_break="no")
 
     # optimize simulation
-    sim.optimize(Q=Q)
+    sim.optimize(Q=Q, options=["y_op_lim"])
 
     # Plot
     if args.plot:
         # Get the last feasible point before a spike
         last_feas_before_spike = np.setdiff1d(
-            np.arange(sim.stimes[-1, 1] / sim.dt),
-            np.round(sim.stimes[:, 1] / sim.dt).astype(int),
+            np.arange(np.max(sim.stimes[:, 1]) / sim.dt),
+            np.round(np.sort(sim.stimes[:, 1]) / sim.dt).astype(int),
         )
         if len(last_feas_before_spike) == 0:
             last_feas_before_spike = -1
@@ -117,6 +130,18 @@ if __name__ == "__main__":
             mpc_problem_plot_2Dtraj(
                 sim.y_op_lim[:, -1], sim.y[:, last_feas_before_spike], problem, basepath
             )
+        elif args.case == "ieee118":
+            mpc_problem_plot_ieee118(
+                sim.y_op_lim[:, -1], sim.y[:, last_feas_before_spike], problem, basepath
+            )
+        elif args.case == "arm":
+            mpc_problem_plot_arm(
+                sim.y_op_lim[:, -1], sim.y[:, last_feas_before_spike], problem, basepath
+            )
+        print(
+            "Error:",
+            np.linalg.norm(sim.y_op_lim[:, -1] - sim.y[:, last_feas_before_spike]) ** 2,
+        )
 
     ## RESULTS
     results = {}

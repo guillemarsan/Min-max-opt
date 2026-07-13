@@ -27,13 +27,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--spike_scale",
         type=float,
-        default=0.1,
+        default=0.25,
         help="Spike scale for the simulation",
     )
     parser.add_argument(
         "--rand_seed",
         type=int,
-        default=3,
+        default=80,
         help="Random seed for the sampling of parameters",
     )
 
@@ -92,16 +92,22 @@ if __name__ == "__main__":
         E=E_diag,
         Tp=Tp_diag,
         spike_scale=args.spike_scale,
-        Tmax=5,
+        Tmax=10,
         y0=np.zeros(args.lat_dim),
     )
 
     # RUN SIMULATION
     # run simulation
-    sim.run(draw_break="no")
+    sim.run()
 
     # optimize simulation
     sim.optimize(Q=Q_diag)
+
+    # match check
+    y_op_lim_from_r_op_lim = (
+        sim.net.D @ sim.r_op_lim[:, -1] - np.linalg.inv(Q_diag) @ b_diag
+    )
+    match = bool(np.linalg.norm(sim.y_op_lim[:, -1] - y_op_lim_from_r_op_lim) < 5e-1)
 
     # Plot
     if args.plot:
@@ -109,6 +115,7 @@ if __name__ == "__main__":
 
     # Transform back to original space
     sim.y = decoder(sim.y)
+
     sim.y_op = decoder(sim.y_op)
     sim.y_op_lim = decoder(sim.y_op_lim)
 
@@ -147,10 +154,14 @@ if __name__ == "__main__":
         results["basepath"] = basepath
         results["args"] = vars(args)
         results["Q"] = Q.tolist()
+        results["Q_diag"] = Q_diag.tolist()
         results["b"] = b.tolist()
+        results["b_diag"] = b_diag.tolist()
         results["E"] = E.tolist()
+        results["E_diag"] = E_diag.tolist()
         results["D"] = sim.net.D.tolist()
         results["Tp"] = Tp.tolist()
+        results["Tp_diag"] = Tp_diag.tolist()
         results["spike_scale"] = args.spike_scale
         results["Tmax"] = sim.Tmax
         results["dt"] = sim.dt
@@ -162,6 +173,8 @@ if __name__ == "__main__":
                 else ("exploding" if np.max(sim.r[:, -1]) > 5e2 else "normal")
             )
             results["spiking_case"] = case
+
+        results["solver_match"] = match
 
         filepath = "%s.json" % basepath
         with open(filepath, "w") as file_handle:
