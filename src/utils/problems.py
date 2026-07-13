@@ -267,8 +267,8 @@ def random_problem_ccvcvx(
 
     decoder = lambda x: np.vstack(
         (
-            x[:mins, :],
-            x[mins:, :] - np.linalg.inv(Q_bb) @ Q_ab.T @ x[:mins, :],
+            x[:mins, :] + Q_ab @ np.linalg.inv(Q_bb) @ x[mins:, :],
+            x[mins:, :],
         )
     )
 
