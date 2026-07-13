@@ -28,7 +28,7 @@ def make_plot(
         for _, point in data.iterrows():
             mean = point["mean"]
             err = point["sem"]
-            xaxis = point["xaxis"]
+            xaxis = point["xaxis"] / 1e3
             legend = point["legend"] if legends is None else legends[i % len(legends)]
 
             plt.plot(xaxis, mean, color=c[i], label=legend)
@@ -62,13 +62,99 @@ def make_plot(
             plt.plot(xaxis, mean, color=c[i])
             i += 1
 
+    elif ptype == "scatter":
+        c = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+        i = 0
+        full_data = []
+        for _, point in data.iterrows():
+            values = point["values"]
+            mean_err = np.mean(values)
+            xaxis = point["xaxis"]
+            mean_xaxis = np.mean(xaxis)
+            legend = point["legend"] if legends is None else legends[i % len(legends)]
+            for j in range(len(values)):
+                full_data.append([xaxis[j], values[j][0]])
+                plt.scatter(xaxis[j], values[j], color=c[i], label=legend, alpha=0.5)
+            plt.scatter(
+                mean_xaxis,
+                mean_err,
+                color=c[i],
+                label=legend,
+                edgecolor="k",
+                s=150,
+                marker="^",
+            )
+            i += 1
+        plt.xscale("log")
+        plt.yscale("log")
+        full_data = np.array(full_data)
+        x = full_data[:, 0]
+        x[x == 0] = 1e-10
+        y = full_data[:, 1]
+        y[y == 0] = 1e-10
+        xs = np.log(x)
+        ys = np.log(y)
+        m, b = np.polyfit(xs, ys, 1)
+        x_vec = np.linspace(np.min(x), np.max(x))
+        plt.plot(
+            x_vec,
+            np.exp(b) * x_vec**m,
+            linestyle="--",
+            color="grey",
+            alpha=0.5,
+            linewidth=2,
+        )
+        plt.text(
+            0.05,
+            0.95,
+            rf"$\mathrm{{err}} = e^{{{b:.2f}}} \# s^{{{m:.2f}}}$",
+            transform=plt.gca().transAxes,
+            fontsize=10,
+            verticalalignment="top",
+            bbox=dict(
+                boxstyle="round,pad=0.3", facecolor="white", alpha=0.7, edgecolor="none"
+            ),
+        )
+
+    elif ptype == "bars":
+
+        eneg = sum(data["Wcc_neg"] & (data["spiking_case"] == "exploding"))
+        nneg = sum(data["Wcc_neg"] & (data["spiking_case"] == "normal"))
+
+        idx = data[data["Wacac_neg"].notna()].index
+        Wacac_neg_notnan = data.loc[idx, "Wacac_neg"]
+        spiking_case_notnan = data.loc[idx, "spiking_case"]
+        idx_nan = data[data["Wacac_neg"].isna()].index
+        spiking_case_nan = data.loc[idx_nan, "spiking_case"]
+        eaneg = sum(Wacac_neg_notnan & (spiking_case_notnan == "exploding"))
+        naneg = sum(Wacac_neg_notnan & (spiking_case_notnan == "normal"))
+        epos = sum(~Wacac_neg_notnan & (spiking_case_notnan == "exploding"))
+        npos = sum(~Wacac_neg_notnan & (spiking_case_notnan == "normal"))
+        enan = sum(spiking_case_nan == "exploding")
+        nnan = sum(spiking_case_nan == "normal")
+
+        labels = ["Wcc < 0", "Wacac < 0", "Wacac >= 0", "r* NaN"]
+        e_vals = [np.sum(eneg), np.sum(eaneg), np.sum(epos), np.sum(enan)]
+        n_vals = [np.sum(nneg), np.sum(naneg), np.sum(npos), np.sum(nnan)]
+
+        x = np.arange(len(labels))
+        width = 0.35
+
+        plt.bar(x - width / 2, e_vals, width, color="r", alpha=0.5, label="exploding")
+
+        plt.bar(x + width / 2, n_vals, width, color="b", alpha=0.5, label="normal")
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels)
+
     plt.title(title, fontsize=10)
     plt.xlabel(axis_labels[0], fontsize=10)
     plt.ylabel(axis_labels[1], fontsize=10)
     plt.tick_params(axis="both", labelsize=10)
-    plt.yscale("log")
+    if ptype != "bars":
+        plt.yscale("log")
     # plt.ylim([-1e-3, 0.01])
-    plt.legend(frameon=False, prop={"size": 10})
+    plt.legend(frameon=False, prop={"size": 10}) if ptype in {"cont", "disc"} else None
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     plt.tight_layout()
@@ -200,7 +286,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--sub_case",
         type=str,
-        default="error_y_lim",
+        default="error_y_lim_final",
         help="Sub-case to plot (e.g. error_y_lim, error_y, etc.)",
     )
     parser.add_argument(
@@ -210,7 +296,7 @@ if __name__ == "__main__":
         help="Directory to read and write files",
     )
     parser.add_argument(
-        "--plot", type=str, default="error_cont", help="Which plot to make"
+        "--plot", type=str, default="conv_exploding", help="Which plot to make"
     )
 
     args = parser.parse_args()
@@ -227,7 +313,14 @@ if __name__ == "__main__":
     df = pd.DataFrame()
     if plot in {""}:
         df = load_dataframe("database", basepath)
-    elif plot in {"error_cont", "error_disc", "error_cont_one", "error_disc_one"}:
+    elif plot in {
+        "error_cont",
+        "error_disc",
+        "error_scatter",
+        "error_cont_one",
+        "error_disc_one",
+        "conv_exploding",
+    }:
         df = load_dataframe("prediction", basepath)
 
     # Plotting
@@ -238,8 +331,8 @@ if __name__ == "__main__":
     if plot == "error_cont":
 
         visualize = ["spike_scale", "all_normal"]
-        labels = ["c", "s"]
-        params_sweep = [(sp, True) for sp in [0.75, 0.5, 0.25, 0.1, 0.05, 0.02]]
+        labels = ["k", "s"]
+        params_sweep = [(sp, True) for sp in [0.25, 0.1, 0.05, 0.02]]
         tags = [args.sub_case, "time_vector"]
 
         fdf = filter(df, visualize, params_sweep, tags)
@@ -253,16 +346,27 @@ if __name__ == "__main__":
             visualize=visualize,
         )
 
-        title = "Error of the latent with respect to optimum"
-        axis_labels = ["Time (s)", "Error (" + args.sub_case + ")"]
+        title = (
+            "Error of the latent with respect to optimum"
+            if "_y" in args.sub_case
+            else "Error of the rates with respect to optimum"
+        )
+        axis_labels = [
+            "Time (s)",
+            (
+                " Primal Error (" + args.sub_case + ")"
+                if "_y" in args.sub_case
+                else "DualError (" + args.sub_case + ")"
+            ),
+        ]
         print("Plotting results...")
         make_plot("cont", newdf, title, axis_labels, name)
 
     elif plot == "error_disc":
 
         visualize = ["spike_scale", "all_normal"]
-        labels = ["c", "s"]
-        params_sweep = [(sp, True) for sp in [0.75, 0.5, 0.25, 0.1, 0.05, 0.02]]
+        labels = ["k", "s"]
+        params_sweep = [(sp, True) for sp in [0.25, 0.1, 0.05, 0.02]]
         tags = [args.sub_case, "time_vector"]
 
         fdf = filter(df, visualize, params_sweep, tags)
@@ -276,17 +380,76 @@ if __name__ == "__main__":
             visualize=visualize,
         )
 
-        title = "Error of the latent with respect to optimum"
-        axis_labels = ["Spikes ", "Error (" + args.sub_case + ")"]
+        title = (
+            "Error of the latent with respect to optimum"
+            if "_y" in args.sub_case
+            else "Error of the rates with respect to optimum"
+        )
+        axis_labels = [
+            "Spikes ",
+            (
+                " Primal Error (" + args.sub_case + ")"
+                if "_y" in args.sub_case
+                else "DualError (" + args.sub_case + ")"
+            ),
+        ]
         print("Plotting results...")
         make_plot("disc", newdf, title, axis_labels, name)
+
+    elif plot == "error_scatter":
+
+        visualize = ["spike_scale", "all_normal"]
+        labels = ["k", "s"]
+        params_sweep = [(sp, True) for sp in [0.25, 0.1, 0.05, 0.02]]
+        tags = [args.sub_case, "nspikes"]
+
+        fdf = filter(df, visualize, params_sweep, tags)
+
+        newdf = prepare_combine(
+            fdf,
+            across=False,
+            data_label=[args.sub_case],
+            xaxis_label="nspikes",
+            labels=labels,
+            visualize=visualize,
+        )
+
+        title = (
+            "Error of the latent with respect to optimum"
+            if "_y" in args.sub_case
+            else "Error of the rates with respect to optimum"
+        )
+        axis_labels = [
+            "Number of Spikes",
+            (
+                "Final Primal Error (" + args.sub_case + ")"
+                if "_y" in args.sub_case
+                else "Final Dual Error (" + args.sub_case + ")"
+            ),
+        ]
+        print("Plotting results...")
+        make_plot("scatter", newdf, title, axis_labels, name)
+
+    elif plot == "conv_exploding":
+
+        visualize = ["spike_scale"]
+        labels = ["k", "s"]
+        params_sweep = [(sp) for sp in [0.25]]
+        tags = ["Wcc_neg", "Wacac_neg", "spiking_case"]
+
+        fdf = filter(df, visualize, params_sweep, tags)
+
+        title = "Convergence analysis of exploding cases"
+        axis_labels = ["Conditions", "Number of simulations"]
+        print("Plotting results...")
+        make_plot("bars", fdf, title, axis_labels, name)
 
     elif plot == "error_cont_one":
 
         visualize = ["spike_scale", "all_normal", "arg_rand_seed"]
-        labels = ["c", "s", "seed"]
+        labels = ["k", "s", "seed"]
 
-        params_sweep = [(sp, True, 0) for sp in [0.75, 0.5, 0.25, 0.1, 0.05, 0.02]]
+        params_sweep = [(sp, True, 0) for sp in [0.25, 0.1, 0.05, 0.02]]
         tags = [args.sub_case, "time_vector"]
 
         fdf = filter(df, visualize, params_sweep, tags)
@@ -300,16 +463,27 @@ if __name__ == "__main__":
             visualize=visualize,
         )
 
-        title = "Error of the latent with respect to optimum (1 example)"
-        axis_labels = ["Time (s)", "Error (" + args.sub_case + ")"]
+        title = (
+            "Error of the latent with respect to optimum (1 example)"
+            if "_y" in args.sub_case
+            else "Error of the rates with respect to optimum (1 example)"
+        )
+        axis_labels = [
+            "Time (s)",
+            (
+                " Primal Error (" + args.sub_case + ")"
+                if "_y" in args.sub_case
+                else "DualError (" + args.sub_case + ")"
+            ),
+        ]
         print("Plotting results...")
         make_plot("cont", newdf, title, axis_labels, name)
 
     elif plot == "error_disc_one":
 
         visualize = ["spike_scale", "all_normal", "arg_rand_seed"]
-        labels = ["c", "s", "seed"]
-        params_sweep = [(sp, True, 0) for sp in [0.75, 0.5, 0.25, 0.1, 0.05, 0.02]]
+        labels = ["k", "s", "seed"]
+        params_sweep = [(sp, True, 0) for sp in [0.25, 0.1, 0.05, 0.02]]
         tags = [args.sub_case, "time_vector"]
 
         fdf = filter(df, visualize, params_sweep, tags)
@@ -323,7 +497,18 @@ if __name__ == "__main__":
             visualize=visualize,
         )
 
-        title = "Error of the latent with respect to optimum (1 example)"
-        axis_labels = ["Spikes ", "Error (" + args.sub_case + ")"]
+        title = (
+            "Error of the latent with respect to optimum (1 example)"
+            if "_y  " in args.sub_case
+            else "Error of the rates with respect to optimum (1 example)"
+        )
+        axis_labels = [
+            "Spikes ",
+            (
+                " Primal Error (" + args.sub_case + ")"
+                if "_y" in args.sub_case
+                else "DualError (" + args.sub_case + ")"
+            ),
+        ]
         print("Plotting results...")
         make_plot("disc", newdf, title, axis_labels, name)

@@ -187,7 +187,7 @@ def compute_across(
 
 def all_normal(set: pd.DataFrame):
     """
-    Check if all simulations in the set are normal
+    Check if all simulations in the set are normal and matching
 
     Parameters
     ----------
@@ -197,11 +197,14 @@ def all_normal(set: pd.DataFrame):
     Returns
     -------
     set : pd.DataFrame
-        Set of simulations to check with added column "all_normal" which is True if all simulations are normal else False
+        Set of simulations to check with added column "all_normal" which is True if all simulations are normal else False.
+        Same for "all_match"
     """
 
     all_normal = set["spiking_case"].isin(["normal"]).all()
     set["all_normal"] = bool(all_normal)
+    all_match = set["solver_match"].all()
+    set["all_match"] = bool(all_match)
     return set
 
 
@@ -259,36 +262,65 @@ def label_solver_sols(data: list, point: pd.Series):
         Series with the simulation data
     """
 
+    y = data[0]
     y_op = data[1]
     y_op_lim = data[2]
+    r = data[3]
     r_op = data[4]
     r_op_lim = data[5]
 
     D = np.array(eval(point["D"]))
     Q = np.array(eval(point["Q"]))
+    Q_diag = np.array(eval(point["Q_diag"]))
     E = np.array(eval(point["E"]))
+    E_diag = np.array(eval(point["E_diag"]))
     b = np.array(eval(point["b"]))
     Tp = np.array(eval(point["Tp"]))
 
-    point["y_lim_nan"] = np.isnan(y_op_lim).any()
-    point["r_lim_nan"] = np.isnan(r_op_lim).any()
-    y_op_lim_from_r_op_lim = np.array([])
-    if not point["r_lim_nan"]:
-        y_op_lim_from_r_op_lim = D @ r_op_lim - np.linalg.inv(Q) @ b
+    # point["y_lim_nan"] = np.isnan(y_op_lim).any()
+    # point["r_lim_nan"] = np.isnan(r_op_lim).any()
+    # y_op_lim_from_r_op_lim = np.array([])
+    # if not point["r_lim_nan"]:
+    #     y_op_lim_from_r_op_lim = D @ r_op_lim - np.linalg.inv(Q) @ b
 
-    if not point["y_lim_nan"] and not point["r_lim_nan"]:
-        point["y_lim_match"] = np.allclose(y_op_lim, y_op_lim_from_r_op_lim, atol=1e-3)
-    else:
-        point["y_lim_match"] = False
+    # if not point["y_lim_nan"] and not point["r_lim_nan"]:
+    #     point["y_lim_match"] = np.allclose(y_op_lim, y_op_lim_from_r_op_lim, atol=1e-1)
+    # else:
+    #     point["y_lim_match"] = False
 
-    if not point["r_lim_nan"]:
-        vol = E @ y_op_lim_from_r_op_lim - Tp
-        feasr = np.all(r_op_lim >= 0)
-        feasV = np.all(vol <= 0)
-        compl = np.allclose(r_op_lim * vol, 0)
-        point["r_lim_KKT"] = feasr and feasV and compl
+    # Convergence
+    eigval, eigvec = np.linalg.eigh(Q_diag)
+    eigval = eigval[::-1]
+    eigvec = eigvec[:, ::-1]
+    S = np.diag(np.sign(eigval))
+    A = np.diag(np.sqrt(np.abs(eigval))) @ eigvec.T
+    EAL = E_diag @ np.linalg.pinv(A)
+    signs = np.diag(S)
+    max_idx = np.where(signs == -1)[0]
+    rncoup_idx = np.where(np.all(np.isclose(EAL[:, max_idx], 0, atol=1e-7), axis=1))[0]
+    ncoups = len(rncoup_idx)
+
+    W = E_diag @ D
+    Wcc = W[ncoups:, ncoups:]
+    point["Wcc_neg"] = np.all(np.linalg.eigvals(Wcc) < 0)
+    if np.isnan(r_op_lim).any():
+        point["Wacac_neg"] = np.nan
     else:
-        point["r_lim_KKT"] = False
+        active = np.where(r_op_lim > 0)[0]
+        acs = active[active > ncoups]
+        Wacac = W[np.ix_(acs, acs)]
+        point["Wacac_neg"] = np.all(np.linalg.eigvals(Wacac) < 0)
+        if np.all(np.linalg.eigvals(Wacac) < 0):
+            a = 1
+
+    # if not point["r_lim_nan"]:
+    #     vol = E @ y_op_lim_from_r_op_lim - Tp
+    #     feasr = np.all(r_op_lim >= 0)
+    #     feasV = np.all(vol <= 0)
+    #     compl = np.allclose(r_op_lim * vol, 0)
+    #     point["r_lim_KKT"] = feasr and feasV and compl
+    # else:
+    #     point["r_lim_KKT"] = False
 
 
 def compute_spike_errors(data, point: pd.Series):
@@ -338,6 +370,8 @@ def compute_spike_errors(data, point: pd.Series):
         stimes = stimes.reshape(-1, 2)
     stimes_idx = (stimes[:, 1] / dt).astype(int)
 
+    point["nspikes"] = tostore(np.array(stimes.shape[0]))
+
     # Predictions
     y_pred = (y[:, stimes_idx] + y[:, stimes_idx + 1]) / 2
     y_pred_ext = extend(y_pred, stimes_idx, y.shape[1])
@@ -364,28 +398,28 @@ def compute_spike_errors(data, point: pd.Series):
     r_op_lim = data[5]
 
     point["error_y_s"] = tostore(
-        np.linalg.norm((y_op[:, np.newaxis] - y_pred) ** 2, axis=0)
+        np.linalg.norm((y_op[:, np.newaxis] - y_pred), axis=0) ** 2
     )
     point["error_y_s_ext"] = tostore(
-        np.linalg.norm((y_op[:, np.newaxis] - y_pred_ext) ** 2, axis=0)
+        np.linalg.norm((y_op[:, np.newaxis] - y_pred_ext), axis=0) ** 2
     )
     point["error_y_lim_s"] = tostore(
-        np.linalg.norm((y_op_lim[:, np.newaxis] - y_lim_pred) ** 2, axis=0)
+        np.linalg.norm((y_op_lim[:, np.newaxis] - y_lim_pred), axis=0) ** 2
     )
     point["error_y_lim_s_ext"] = tostore(
-        np.linalg.norm((y_op_lim[:, np.newaxis] - y_lim_pred_ext) ** 2, axis=0)
+        np.linalg.norm((y_op_lim[:, np.newaxis] - y_lim_pred_ext), axis=0) ** 2
     )
     point["error_r_s"] = tostore(
-        np.linalg.norm((r_op[:, np.newaxis] - r_pred) ** 2, axis=0)
+        np.linalg.norm((r_op[:, np.newaxis] - r_pred), axis=0) ** 2
     )
     point["error_r_s_ext"] = tostore(
-        np.linalg.norm((r_op[:, np.newaxis] - r_pred_ext) ** 2, axis=0)
+        np.linalg.norm((r_op[:, np.newaxis] - r_pred_ext), axis=0) ** 2
     )
     point["error_r_lim_s"] = tostore(
-        np.linalg.norm((r_op_lim[:, np.newaxis] - r_lim_pred) ** 2, axis=0)
+        np.linalg.norm((r_op_lim[:, np.newaxis] - r_lim_pred), axis=0) ** 2
     )
     point["error_r_lim_s_ext"] = tostore(
-        np.linalg.norm((r_op_lim[:, np.newaxis] - r_lim_pred_ext) ** 2, axis=0)
+        np.linalg.norm((r_op_lim[:, np.newaxis] - r_lim_pred_ext), axis=0) ** 2
     )
 
     # convs = [2, 3, 5]
@@ -447,13 +481,23 @@ def compute_time_errors(data: list, point: pd.Series):
     r_op = data[4]
     r_op_lim = data[5]
 
-    point["error_y"] = tostore(np.linalg.norm((y_op[:, np.newaxis] - y) ** 2, axis=0))
+    if point["arg_rand_seed"] == 145:
+        a = 1
+    point["error_y"] = tostore(np.linalg.norm((y_op[:, np.newaxis] - y), axis=0) ** 2)
     point["error_y_lim"] = tostore(
-        np.linalg.norm((y_op_lim[:, np.newaxis] - y) ** 2, axis=0)
+        np.linalg.norm((y_op_lim[:, np.newaxis] - y), axis=0) ** 2
     )
-    point["error_r"] = tostore(np.linalg.norm((r_op[:, np.newaxis] - r) ** 2, axis=0))
+    point["error_r"] = tostore(np.linalg.norm((r_op[:, np.newaxis] - r), axis=0) ** 2)
     point["error_r_lim"] = tostore(
-        np.linalg.norm((r_op_lim[:, np.newaxis] - r) ** 2, axis=0)
+        np.linalg.norm((r_op_lim[:, np.newaxis] - r), axis=0) ** 2
+    )
+    point["error_y_final"] = tostore(np.array([np.linalg.norm(y_op - y[:, -1]) ** 2]))
+    point["error_y_lim_final"] = tostore(
+        np.array([np.linalg.norm(y_op_lim - y[:, -1]) ** 2])
+    )
+    point["error_r_final"] = tostore(np.array([np.linalg.norm(r_op - r[:, -1]) ** 2]))
+    point["error_r_lim_final"] = tostore(
+        np.array([np.linalg.norm(r_op_lim - r[:, -1]) ** 2])
     )
 
 
