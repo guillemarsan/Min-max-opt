@@ -1,6 +1,8 @@
 import time as time
+from functools import partial
 
 import matplotlib
+import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.axes import Axes
@@ -12,8 +14,9 @@ from SCN.utils_neuro import _canon_symmetric
 
 # Type of optimization to plot
 # cos = ["minmax", "canminmax", "QP", "canQP", "dalian"]
-cos = ["minmax"]
+cos = ["canminmax"]
 dir = "./data/theory_plots/"
+animate = True
 
 
 def gradient_line(y: np.ndarray, forget: bool = False) -> LineCollection:
@@ -52,11 +55,11 @@ def plot_traj(
     ax: Axes,
     traj: np.ndarray,
     gradient: bool = True,
-) -> None:
+) -> list:
 
     if gradient:
         final = ax.scatter(
-            traj[0, -1], traj[1, -1], edgecolor="black", facecolors="white", zorder=10
+            traj[0, -1], traj[1, -1], edgecolor="black", facecolors="black", zorder=10
         )
         middle = gradient_line(traj)
         ax.add_collection(middle)
@@ -65,15 +68,48 @@ def plot_traj(
     else:
 
         final = ax.scatter(
-            traj[0, -1], traj[1, -1], edgecolor="blue", facecolors="white", zorder=10
+            traj[0, -1], traj[1, -1], edgecolor="blue", facecolors="black", zorder=10
         )
         middle = ax.plot(traj[0, :], traj[1, :], color="blue", alpha=0.5)[0]
         ini = ax.scatter(traj[0, 0], traj[1, 0], edgecolor="blue", facecolors="none")
 
+    artists = [ini, middle, final]
+    return artists
 
-def plot2D(Q, b, E, Tp, pts, D, y, y_op, y_op_lim, extrapoint=None, name="test"):
 
-    fig = plt.figure()
+def animate_traj(ax, artists, traj):
+
+    artists[0].set_offsets(traj[:, 0])
+    artists[1].remove()
+    gtraj = gradient_line(traj, forget=True)
+    ax.add_collection(gtraj)
+    artists[1] = gtraj
+    artists[2].set_offsets(traj[:, -1])
+
+
+def animate_small_vector(artists, point, vector):
+    artists.set_offsets([point[0], point[1]])
+    artists.set_UVC(vector[0], vector[1])
+
+
+def plot2D(
+    Q,
+    b,
+    E,
+    Tp,
+    pts,
+    D,
+    y,
+    y_op,
+    y_op_lim,
+    extrapoint=None,
+    name="test",
+    save=True,
+    fig=None,
+):
+    if fig is None:
+        fig = plt.figure()
+
     ax = fig.gca()
 
     vleng = 2
@@ -100,7 +136,9 @@ def plot2D(Q, b, E, Tp, pts, D, y, y_op, y_op_lim, extrapoint=None, name="test")
         + b[0] * y_op_lim[0]
         + b[1] * y_op_lim[1]
     )
-    contour_levels = np.linspace(-2, 2, 11)  # Adjust the number of contour levels here
+    contour_levels = np.linspace(
+        -2, 2, 50
+    )  # 11)  # Adjust the number of contour levels here
     contour_levels = np.append(contour_levels, [opt])
     contour_levels = np.sort(contour_levels)
     cont = ax.contour(Y1, Y2, Z, levels=contour_levels, cmap="coolwarm", linewidths=1)
@@ -131,11 +169,11 @@ def plot2D(Q, b, E, Tp, pts, D, y, y_op, y_op_lim, extrapoint=None, name="test")
     colors = ["g", "b", "r"]
     for i in range(E.shape[0]):
         # Compute the line corresponding to the constraint
-        y2_constr = (Tp[i] - E[i, 0] * y1) / E[i, 1]
-        mask_vec = masks[i](y1, y2_constr)
-        y1_masked = y1[mask_vec]
-        y2_constr_masked = y2_constr[mask_vec]
-        ax.plot(y1_masked, y2_constr_masked, label=f"Constraint {i+1}", color=colors[i])
+        y1_constr = (Tp[i] - E[i, 1] * y2) / E[i, 0]
+        mask_vec = masks[i](y1_constr, y2)
+        y1_constr_masked = y1_constr[mask_vec]
+        y2_masked = y2[mask_vec]
+        ax.plot(y1_constr_masked, y2_masked, label=f"Constraint {i+1}", color=colors[i])
 
     # Decoder arrows
     for i in range(D.shape[1]):
@@ -152,8 +190,8 @@ def plot2D(Q, b, E, Tp, pts, D, y, y_op, y_op_lim, extrapoint=None, name="test")
         )
 
     # Plot the traj
-    plot_traj(ax, y, gradient=True)
-    ax.quiver(
+    traj = plot_traj(ax, y, gradient=True)
+    vec = ax.quiver(
         y[0, -1],
         y[1, -1],
         (-y[0, -1] - (np.linalg.inv(Q) @ b)[0]) / 2,
@@ -165,6 +203,7 @@ def plot2D(Q, b, E, Tp, pts, D, y, y_op, y_op_lim, extrapoint=None, name="test")
         alpha=1,
         zorder=10,
     )
+    artists = [traj, vec]
 
     # Plot the optimal points
     # Black contour with white filling
@@ -177,15 +216,16 @@ def plot2D(Q, b, E, Tp, pts, D, y, y_op, y_op_lim, extrapoint=None, name="test")
         label="Optimal point",
         zorder=8,
     )
-    ax.scatter(
-        y_op[0],
-        y_op[1],
-        c="white",
-        edgecolors="black",
-        marker="D",
-        label="Optimal point without constraints",
-        zorder=8,
-    )
+    if y_op is not None:
+        ax.scatter(
+            y_op[0],
+            y_op[1],
+            c="white",
+            edgecolors="black",
+            marker="D",
+            label="Optimal point without constraints",
+            zorder=8,
+        )
 
     if extrapoint is not None:
         ax.scatter(
@@ -224,49 +264,106 @@ def plot2D(Q, b, E, Tp, pts, D, y, y_op, y_op_lim, extrapoint=None, name="test")
     ax.set_aspect("equal")
     ax.set_xlim(-vleng - 0.1, vleng + 0.1)
     ax.set_ylim(-vleng - 0.1, vleng + 0.1)
-    tick_vals = np.arange(-vleng, vleng + 1, 1)
-    tick_vals = np.delete(tick_vals, np.where(tick_vals == 0))
+    # tick_vals = np.arange(-vleng, vleng + 1, 1)
+    # tick_vals = np.delete(tick_vals, np.where(tick_vals == 0))
+    tick_vals = []
     ax.set_xticks(tick_vals)
     ax.set_yticks(tick_vals)
-    ax.grid(True)
+    # ax.grid(True)
 
-    fig.savefig(name + ".svg", dpi=300, bbox_inches="tight", pad_inches=0.1)
+    if save:
+        fig.savefig(name + ".svg", dpi=300, bbox_inches="tight", pad_inches=0.1)
 
-    return cont
+    return fig, cont, artists
+
+
+def animate2D(Q, b, E, Tp, pts, D, y, y_op, y_op_lim, extrapoint=None, name="test"):
+
+    def flatten(l: list) -> list:
+        return (
+            [l] if not isinstance(l, list) else [a for sub in l for a in flatten(sub)]
+        )
+
+    fig, _, artists = plot2D(
+        Q=Q,
+        b=b,
+        E=E,
+        Tp=Tp,
+        pts=pts,
+        D=D,
+        y=y[:, 0:1],
+        y_op=y_op,
+        y_op_lim=y_op_lim,
+        extrapoint=extrapoint,
+        name=name,
+        save=False,
+    )
+    ax = fig.gca()
+    artists_flatten = flatten(artists)
+
+    def init():
+        return artists_flatten
+
+    def update(frame, artists, artists_flatten):
+        i = frame * anim_freq
+        if i == y.shape[1]:
+            animate_traj(ax, artists[0], y[:, :i])
+        else:
+            animate_traj(ax, artists[0], y[:, : i + 1])
+        animate_small_vector(artists[1], y[:, i], -y[:, i])
+        return artists_flatten
+
+    anim_freq = 100
+    frames = int(y.shape[1] / anim_freq)
+
+    anim = animation.FuncAnimation(
+        fig,
+        func=partial(update, artists=artists, artists_flatten=artists_flatten),
+        frames=np.arange(0, frames),
+        init_func=init,
+        blit=True,
+    )
+
+    anim.save(name + "_anim.gif", writer="pillow", fps=10)
 
 
 def plot_subproblem(Q, b, opta, optb, cont, name):
 
-    fig = plt.figure(figsize=(10, 5))
+    fig = plt.figure(figsize=(10, 7))
     ax1 = plt.subplot(1, 2, 1)
     ax2 = plt.subplot(1, 2, 2)
     axes = [ax1, ax2]
 
-    y2valarr_l = lambda y2: (
-        1 / 2 * (Q[0, 0] * y1valarr**2 + Q[1, 1] * y2**2 + 2 * Q[0, 1] * y1valarr * y2)
-        + b[0] * y1valarr
-        + b[1] * y2
+    y1valarr_l = lambda y1: (
+        1 / 2 * (Q[0, 0] * y1**2 + Q[1, 1] * y2valarr**2 + 2 * Q[0, 1] * y1 * y2valarr)
+        + b[0] * y1
+        + b[1] * y2valarr
     )
 
     for i in range(2):
         vleng = 2
-        y1valarr = np.linspace(-vleng, vleng, 200)
-        y2valarr = y2valarr_l(opta[1] if i == 0 else optb[1])
-        points = np.array([y1valarr, y2valarr]).T.reshape(-1, 1, 2)
-        segments = np.concatenate([points[:-1], points[1:]], axis=1)
+        y2valarr = np.linspace(-vleng, vleng, 200)
+        y1valarr = y1valarr_l(opta[0] if i == 0 else optb[0])
+        points = np.array([y2valarr, y1valarr]).T.reshape(-1, 1, 2)
+        segments = np.concatenate([points[1:], points[:-1]], axis=1)
         lc = LineCollection(list(segments), cmap=cont.cmap, norm=cont.norm)
-        lc.set_array(y2valarr)  # color by y-values
+        lc.set_array(y1valarr)  # color by y-values
         lc.set_linewidth(2)
         axes[i].add_collection(lc)
 
-        cut1 = (E[0, 1] * opta[1] - Tp[0]) / -E[0, 0]
+        cut1 = (
+            (E[0, 0] * opta[0] - Tp[0]) / -E[0, 1]
+            if i == 0
+            else (E[0, 0] * optb[0] - Tp[0]) / -E[0, 1]
+        )
         axes[i].vlines(cut1, -1, 4, color="g", linestyle="-", linewidth=2)
 
         axes[i].axvspan(xmin=-vleng, xmax=cut1, facecolor="grey", alpha=0.2, zorder=0)
         axes[i].set_xlim(-vleng, vleng)
-        axes[i].set_ylim(-1, 4)
+        axes[i].set_ylim(-1, 0.2)
+        axes[i].set_xticks(np.arange(-vleng, vleng + 1, 1))
 
-        axes[i].set_aspect("equal")
+        # axes[i].set_aspect("equal")
 
     fig.savefig(name + "_sub.svg", dpi=300, bbox_inches="tight", pad_inches=0.1)
 
@@ -274,14 +371,14 @@ def plot_subproblem(Q, b, opta, optb, cont, name):
 for co in cos:
 
     # Parameters of the constraints
-    E = np.array([[-1, -1 / 3], [-1, -0.1], [0, -1]])
-    pts = np.array([[0.35, 0.5], [0.15, 1.5], [1.5, -1.1]])
+    E = np.array([[-1 / 3, -1], [-0.1, -1], [-1, 0]])
+    pts = np.array([[0.5, 0.35], [1.5, 0.15], [-1.1, 1.5]])
     Tp = np.array([-0.5, -0.3, 1.1])
     opta = None
 
     # Parameters of the problem
     if co == "canQP":
-        Q = np.array([[1, 0], [0, 1]])
+        Q = np.array([[1 / 2, 0], [0, 1 / 2]])
         b = np.array([0, 0])
         y0 = np.array([1, 1])
         centergeom = np.array([0.5, 0.5])
@@ -296,11 +393,11 @@ for co in cos:
         y0 = np.linalg.inv(A) @ (np.array([1, 1]) - fact)
         centergeom = np.array([0, -1])
     elif co == "canminmax":
-        Q = np.array([[1, 0], [0, -1]])
+        Q = np.array([[1 / 2, 0], [0, -1 / 2]])
         b = np.array([0, 0])
-        y0 = np.array([0.3, 1.5])
+        y0 = np.array([1.5, 0.3])
         centergeom = np.array([0.5, 0.5])
-        xa = 0.25
+        xa = 0.65
         ya = (-E[0, 0] * xa + Tp[0]) / E[0, 1]
         opta = np.array([xa, ya])
     elif co == "minmax":
@@ -334,6 +431,13 @@ for co in cos:
         b = np.array([0, 0])
         y0 = np.array([0.3, 1.5])
         centergeom = np.array([0.5, 0.5])
+    elif co == "pers":
+        E = np.array([[1.0, 0.0], [-1.0, 0.0], [0.7873885, 0.6164571]])
+        Tp = 0.5 * np.ones(3)
+        Q = np.array([[0.50179652, 0.0], [0.0, -0.83366482]])
+        b = np.array([0.37328789, 1.32810727])
+        y0 = 0 * np.array([-0.25, -0.25])
+        centergeom = np.zeros(2)
     else:
         E = np.array([[-3 / 4, -1 / 4 - 0.5], [0, -1 / np.sqrt(2)]])
         Tp = np.array([0, -0.5])  # np.array([-0.5, 0])
@@ -348,17 +452,14 @@ for co in cos:
         b=b,
         E=E,
         Tp=Tp,
-        spike_scale=1,
+        spike_scale=0.02,
         y0=y0,
         Tmax=5,
         tag=co,
     )
 
     # run simulation
-    sim.run(
-        draw_break="one",
-        criterion="inh_max",
-    )
+    sim.run()
 
     # optimize simulation
     sim.optimize(Q=Q)
@@ -367,7 +468,7 @@ for co in cos:
     sim.plot(centergeom=centergeom)
 
     # plot latent space pretty
-    cont = plot2D(
+    _, cont, _ = plot2D(
         Q,
         b,
         E,
@@ -389,4 +490,19 @@ for co in cos:
             sim.y_op_lim[:, -1],
             cont,
             name=dir + co,
+        )
+
+    if animate:
+        animate2D(
+            Q,
+            b,
+            E,
+            Tp,
+            pts,
+            sim.net.D,
+            sim.y,
+            None,
+            sim.y_op_lim[:, -1],
+            extrapoint=None,
+            name=dir + co + "_anim",
         )
