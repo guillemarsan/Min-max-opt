@@ -4,7 +4,9 @@ import random
 import string
 import time
 
+import matplotlib.pyplot as plt
 import numpy as np
+from scipy.signal import lfilter
 from SCN import Simulation
 
 from utils.problems import (
@@ -26,15 +28,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--case",
         type=str,
-        default="arm",
+        default="ieee118",
         help="Type of MPC problem: pv, 2D, 2Dtraj, ieee118, arm",
-    )
-
-    parser.add_argument(
-        "--rand_seed",
-        type=int,
-        default=19,
-        help="Random seed for the sampling of parameters",
     )
 
     parser.add_argument(
@@ -43,27 +38,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--plot", action="store_true", default=True, help="Plot the results"
     )
-    parser.add_argument(
-        "--save_sim", action="store_true", default=False, help="Save the simulation"
-    )
-    parser.add_argument(
-        "--save_outputs",
-        action="store_true",
-        default=False,
-        help="Save the simulation outputs",
-    )
-    parser.add_argument(
-        "--save_config",
-        action="store_true",
-        default=False,
-        help="Save the script configuration",
-    )
 
     args = parser.parse_args()
 
     timestr = time.strftime("%Y%m%d-%H%M%S")
     code = "".join(random.choice(string.ascii_letters) for i in range(5))
-    name = timestr + "-" + code + "-s-" + str(args.rand_seed)
+    name = timestr + "-" + code
     basepath = args.dir + name
 
     # PROBLEM PARAMETERS
@@ -80,32 +60,38 @@ if __name__ == "__main__":
     else:
         raise ValueError("Case not recognized")
 
+    mult_factors = [4, 3, 2, 1, 0.75, 0.5]
     if args.case in ["pv", "2D"]:
-        spike_scale = 0.02
+        opt_spike_scale = 0.02
     elif args.case in ["ieee118", "arm"]:
-        spike_scale = 0.5
+        opt_spike_scale = 0.5
     else:
-        spike_scale = 0.15
+        opt_spike_scale = 0.15
 
-    # Initialize simulation
-    sim = Simulation.init_optim(
-        Q=Q,
-        b=b,
-        E=E,
-        Tp=Tp,
-        spike_scale=spike_scale,
-        Tmax=5,
-    )
+    error_latent_vector = []
+    error_score_vector = []
+    error_latent_norm_vector = []
+    for m in mult_factors:
+        spike_scale = m * opt_spike_scale
+        print("Spike scale:" + str(spike_scale))
 
-    # RUN SIMULATION
-    # run simulation
-    sim.run(draw_break="no")
+        # Initialize simulation
+        sim = Simulation.init_optim(
+            Q=Q,
+            b=b,
+            E=E,
+            Tp=Tp,
+            spike_scale=spike_scale,
+            Tmax=5,
+        )
 
-    # optimize simulation
-    sim.optimize(Q=Q, options=["y_op_lim"])
+        # RUN SIMULATION
+        # run simulation
+        sim.run(draw_break="no")
 
-    # Plot
-    if args.plot:
+        # optimize simulation
+        sim.optimize(Q=Q, options=["y_op_lim"])
+
         # Get the last feasible point before a spike
         last_feas_before_spike = np.setdiff1d(
             np.arange(np.max(sim.stimes[:, 1]) / sim.dt),
@@ -116,84 +102,173 @@ if __name__ == "__main__":
             # raise ValueError("No feasible point")
         else:
             last_feas_before_spike = int(last_feas_before_spike[-1])
+        print("Last feasible point before spike:", last_feas_before_spike)
 
-        sim.plot()
-        if args.case == "pv":
-            mpc_problem_plot_pv(
-                sim.y_op_lim[:, -1], sim.y[:, last_feas_before_spike], problem, basepath
-            )
-        elif args.case == "2D":
-            mpc_problem_plot_2D(
-                sim.y_op_lim[:, -1], sim.y[:, last_feas_before_spike], problem, basepath
-            )
-        elif args.case == "2Dtraj":
-            mpc_problem_plot_2Dtraj(
-                sim.y_op_lim[:, -1], sim.y[:, last_feas_before_spike], problem, basepath
-            )
-        elif args.case == "ieee118":
-            mpc_problem_plot_ieee118(
-                sim.y_op_lim[:, -1], sim.y[:, last_feas_before_spike], problem, basepath
-            )
-        elif args.case == "arm":
-            mpc_problem_plot_arm(
-                sim.y_op_lim[:, -1], sim.y[:, last_feas_before_spike], problem, basepath
-            )
+        # Compute errors
+        # Error in latent space
+        error_latent = (
+            np.linalg.norm(sim.y_op_lim[:, -1] - sim.y[:, last_feas_before_spike]) ** 2
+        )
+        if last_feas_before_spike == -1:
+            error_latent_vector.append(np.nan)
+        else:
+            error_latent_vector.append(error_latent)
         print(
-            "Error:",
-            np.linalg.norm(sim.y_op_lim[:, -1] - sim.y[:, last_feas_before_spike]) ** 2,
+            "Error (latent):",
+            error_latent,
+        )
+        # Error in latent space normalized by dimension
+        error_latent_norm = (
+            np.linalg.norm(sim.y_op_lim[:, -1] - sim.y[:, last_feas_before_spike]) ** 2
+            / sim.net.do
+        )
+        if last_feas_before_spike == -1:
+            error_latent_norm_vector.append(np.nan)
+        else:
+            error_latent_norm_vector.append(error_latent_norm)
+        print(
+            "Error (latent norm):",
+            error_latent_norm,
+        )
+        # Relative error in score
+        if args.case != "ieee118":
+            _, v, w = problem["decoder"](sim.y_op_lim[:, -1])
+        else:
+            v, w = problem["decoder"](sim.y_op_lim[:, -1])
+        score_solver, _, _ = (
+            problem["score"](v.T.flatten(), w.T.flatten())
+            if args.case != "arm"
+            else problem["score"](v[:, :-1].T.flatten(), w[:, :-1].T.flatten())
+        )
+        if args.case != "ieee118":
+            _, v, w = problem["decoder"](sim.y[:, last_feas_before_spike])
+        else:
+            v, w = problem["decoder"](sim.y[:, last_feas_before_spike])
+        score_SNN, _, _ = (
+            problem["score"](v.T.flatten(), w.T.flatten())
+            if args.case != "arm"
+            else problem["score"](v[:, :-1].T.flatten(), w[:, :-1].T.flatten())
+        )
+        error_score = (score_solver - score_SNN) ** 2 / np.maximum(
+            score_solver**2, score_SNN**2
+        )
+        if last_feas_before_spike == -1:
+            error_score_vector.append(np.nan)
+        else:
+            error_score_vector.append(error_score)
+        print(
+            "Error (score):",
+            error_score,
         )
 
-    ## RESULTS
-    results = {}
+        # Plot
+        if args.plot and m == 1:
 
-    if args.save_sim:
-        # Save simulation
-        print("Saving simulation...")
-        sim.save(args.dir, name)
+            sim.plot()
+            if args.case == "pv":
+                mpc_problem_plot_pv(
+                    sim.y_op_lim[:, -1],
+                    sim.y[:, last_feas_before_spike],
+                    problem,
+                    basepath,
+                )
+            elif args.case == "2D":
+                mpc_problem_plot_2D(
+                    sim.y_op_lim[:, -1],
+                    sim.y[:, last_feas_before_spike],
+                    problem,
+                    basepath,
+                )
+            elif args.case == "2Dtraj":
+                mpc_problem_plot_2Dtraj(
+                    sim.y_op_lim[:, -1],
+                    sim.y[:, last_feas_before_spike],
+                    problem,
+                    basepath,
+                )
+            elif args.case == "ieee118":
+                mpc_problem_plot_ieee118(
+                    sim.y_op_lim[:, -1],
+                    sim.y[:, last_feas_before_spike],
+                    problem,
+                    basepath,
+                )
+            elif args.case == "arm":
+                mpc_problem_plot_arm(
+                    sim.y_op_lim[:, -1],
+                    sim.y[:, last_feas_before_spike],
+                    problem,
+                    basepath,
+                )
 
-    if args.save_outputs:
-        # Save results
-        if hasattr(sim, "y"):
-            np.savetxt("%s-y.csv" % basepath, sim.y, fmt="%.3e")
-        if hasattr(sim, "y_op"):
-            np.savetxt("%s-y_op.csv" % basepath, sim.y_op[:, -1], fmt="%.3e")
-        if hasattr(sim, "y_op_lim"):
-            np.savetxt("%s-y_op_lim.csv" % basepath, sim.y_op_lim[:, -1], fmt="%.3e")
+        # Estimate energy consumption and convergence
+        def estimate_energy(nspikes, neurs):
+            energy_per_syn = 30  # pJ/synapse
+            energy_est = nspikes * neurs * energy_per_syn
+            print("Number of spikes:", nspikes)
+            print("Estimated energy consumption (pJ):", energy_est)
 
-        if hasattr(sim, "r"):
-            np.savetxt("%s-r.csv" % basepath, sim.r, fmt="%.3e")
-        if hasattr(sim, "r_op"):
-            np.savetxt("%s-r_op.csv" % basepath, sim.r_op[:, -1], fmt="%.3e")
-        if hasattr(sim, "r_op_lim"):
-            np.savetxt("%s-r_op_lim.csv" % basepath, sim.r_op_lim[:, -1], fmt="%.3e")
+        def estimate_convergence(x):
 
-        if hasattr(sim, "stimes"):
-            np.savetxt("%s-stimes.csv" % basepath, sim.stimes, fmt="%.3e")
-        if hasattr(sim, "V"):
-            np.savetxt("%s-V.csv" % basepath, sim.V, fmt="%.3e")
-
-    if args.save_config:
-        results["name"] = name
-        results["dir"] = args.dir
-        results["basepath"] = basepath
-        results["args"] = vars(args)
-        results["Q"] = Q.tolist()
-        results["b"] = b.tolist()
-        results["E"] = E.tolist()
-        results["D"] = sim.net.D.tolist()
-        results["Tp"] = Tp.tolist()
-        results["spike_scale"] = spike_scale
-        results["Tmax"] = sim.Tmax
-        results["dt"] = sim.dt
-
-        if hasattr(sim, "r"):
-            case = (
-                "silent"
-                if np.max(sim.r[:, -1]) == 0
-                else ("exploding" if np.max(sim.r[:, -1]) > 1 / sim.dt else "normal")
+            running_mean = np.cumsum(x, axis=1) / np.arange(1, x.shape[1] + 1)
+            delta = np.diff(running_mean, axis=1)
+            rel_change = np.linalg.norm(delta, axis=0) / np.maximum(
+                np.linalg.norm(running_mean[:, :-1], axis=0), 1e-8
             )
-            results["spiking_case"] = case
+            tol = 1e-3
+            window_size = 10
+            good = rel_change < tol
+            conv = (
+                np.convolve(good, np.ones(window_size, dtype=int), "valid")
+                == window_size
+            )
+            if np.any(conv):
+                idx = np.argmax(conv) + window_size
+                print("Convergence achieved at time:", idx * sim.dt)
+            else:
+                print("No convergence achieved.")
 
-        filepath = "%s.json" % basepath
-        with open(filepath, "w") as file_handle:
-            json.dump(results, file_handle, indent=4)
+        estimate_energy(sim.stimes.shape[0], sim.r.shape[0])
+        estimate_convergence(sim.y)
+
+    if args.plot:
+
+        def plot_error(error, error_case="lat"):
+            plt.figure(figsize=(8, 4))
+            plt.plot([m * opt_spike_scale for m in mult_factors], error, marker="o")
+            plt.plot(
+                mult_factors[3] * opt_spike_scale,
+                error[3],
+                marker="D",
+                ms=8,
+                label="Visualized case",
+            )
+            plt.xlabel("Spike magnitude")
+            spike_vec = [np.round(m * opt_spike_scale, 3) for m in mult_factors]
+            ticklabels = [
+                str(spike_vec[i]) + "\n" + "(x" + str(mult_factors[i]) + ")"
+                for i in range(len(mult_factors))
+            ]
+            plt.xticks(spike_vec, ticklabels)
+            if error_case == "lat":
+                ylabel = "Latent error"
+            elif error_case == "lat_norm":
+                ylabel = "Latent error (normalized)"
+            else:
+                ylabel = "Score relative error"
+            plt.ylabel(ylabel + " (last feasible point)")
+            plt.title("Error vs Spike magnitude (" + args.case + ")")
+            plt.gca().spines["top"].set_visible(False)
+            plt.gca().spines["right"].set_visible(False)
+            plt.ylim(bottom=0)
+
+            plt.gcf().savefig(
+                basepath + "-mpc_k_" + args.case + "_" + error_case + ".svg",
+                dpi=300,
+                bbox_inches="tight",
+                pad_inches=0.1,
+            )
+
+        plot_error(error_latent_vector, error_case="lat")
+        plot_error(error_latent_norm_vector, error_case="lat_norm")
+        plot_error(error_score_vector, error_case="score")

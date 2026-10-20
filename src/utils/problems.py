@@ -755,6 +755,8 @@ def mpc_problem_pv() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, di
         v = X[T:].reshape(1, -1)
         x = A @ x0 + B @ v.T.flatten() + C @ w.T.flatten()
         x = x.reshape(-1, 2).T
+        # Add x0 to the trajectory
+        x = np.concatenate((x0[:, None], x), axis=1)
         return x, v, w
 
     def score(v, w):
@@ -945,6 +947,8 @@ def mpc_problem_2D() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, di
         v = X[2 * T :].reshape(-1, 2).T
         x = A @ x0 + B @ v.T.flatten() + C @ w.T.flatten()
         x = x.reshape(-1, 4).T
+        # Add x0 to the trajectory
+        x = np.concatenate((x0[:, None], x), axis=1)
         return x, v, w
 
     def score(vf, wf):
@@ -1142,6 +1146,8 @@ def mpc_problem_2Dtraj() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray
         v = X[2 * T :].reshape(-1, 2).T
         x = A @ x0 + B @ v.T.flatten() + C @ w.T.flatten()
         x = x.reshape(-1, 4).T
+        # Add x0 to the trajectory
+        x = np.concatenate((x0[:, None], x), axis=1)
         return x, v, w
 
     def score(vf, wf):
@@ -1191,8 +1197,7 @@ def mpc_problem_plot_pv(
         # Plot trajectory
         decoder = problem["decoder"]
         x, v, w = decoder(vars)
-        # Add x0 to the trajectory
-        x = np.concatenate((problem["x0"][:, None], x), axis=1)
+
         ax.plot(x[0, :], x[1, :], marker="o")
 
         # Plot force vectors
@@ -1298,8 +1303,6 @@ def mpc_problem_plot_2D(
         # Plot trajectory
         decoder = problem["decoder"]
         x, v, w = decoder(vars)
-        # Add x0 to the trajectory
-        x = np.concatenate((problem["x0"][:, None], x), axis=1)
 
         # Plot trajectory in position space (p_1, p_2)
         ax.plot(x[0, :], x[1, :], marker="o")
@@ -1423,8 +1426,6 @@ def mpc_problem_plot_2Dtraj(
         # Plot trajectory
         decoder = problem["decoder"]
         x, v, w = decoder(vars)
-        # Add x0 to the trajectory
-        x = np.concatenate((problem["x0"][:, None], x), axis=1)
 
         # Plot trajectory in position space (p_1, p_2)
         ax.plot(x[0, :], x[1, :], marker="o")
@@ -1855,7 +1856,7 @@ def mpc_problem_plot_ieee118(
             pos,
             ax=ax,
             node_color=p,
-            edgecolors="gray",
+            edgecolors="black",
             edge_color=edge_colors,
             width=1 + 3 * rho,
             cmap="gray",
@@ -2136,6 +2137,11 @@ def mpc_problem_arm() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, d
         v = X[2 * T :].reshape(-1, 2).T
         x = A @ x0 + B @ v.T.flatten() + C @ w.T.flatten()
         x = x.reshape(-1, 4).T
+        # Add x0 to the trajectory
+        x = np.concatenate((x0[:, None], x), axis=1)
+        # Add zeros to the velocity and disturbance
+        v = np.concatenate((v, np.zeros((2, 1))), axis=1)
+        w = np.concatenate((w, np.zeros((2, 1))), axis=1)
         return x, v, w
 
     def score(vf, wf):
@@ -2183,11 +2189,6 @@ def mpc_problem_plot_arm(
     def digest(vars):
         decoder = problem["decoder"]
         q, v, w = decoder(vars)
-        # Add x0 to the trajectory
-        q = np.concatenate((problem["x0"][:, None], q), axis=1)
-        # Add zeros to the velocity and disturbance
-        v = np.concatenate((v, np.zeros((2, 1))), axis=1)
-        w = np.concatenate((w, np.zeros((2, 1))), axis=1)
 
         # Transform the angles to position
         l1 = 1.0
