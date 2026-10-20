@@ -5,6 +5,7 @@ import string
 import time
 
 import numpy as np
+from scipy.signal import lfilter
 from SCN import Simulation
 
 from utils.problems import random_problem_ccvcvx
@@ -27,21 +28,27 @@ if __name__ == "__main__":
     parser.add_argument(
         "--spike_scale",
         type=float,
-        default=0.25,
+        default=0.01,
         help="Spike scale for the simulation",
     )
     parser.add_argument(
         "--rand_seed",
         type=int,
-        default=80,
+        default=113,
         help="Random seed for the sampling of parameters",
+    )
+    parser.add_argument(
+        "--SNN_init",
+        type=str,
+        default="Solver",
+        help="SNN initialization mode: 'SNN' for SNN-initialized, 'Solver' for solver-initialized, 'Indep' for independent",
     )
 
     parser.add_argument(
         "--dir", type=str, default="./data/test/", help="Directory to dump output"
     )
     parser.add_argument(
-        "--plot", action="store_true", default=True, help="Plot the results"
+        "--plot", action="store_true", default=False, help="Plot the results"
     )
     parser.add_argument(
         "--save_sim", action="store_true", default=False, help="Save the simulation"
@@ -85,23 +92,100 @@ if __name__ == "__main__":
         args.lat_dim, args.num_neur, args.num_ncoup, args.rand_seed, sphere=True
     )
 
-    # Initialize simulation
-    sim = Simulation.init_optim(
-        Q=Q_diag,
-        b=b_diag,
-        E=E_diag,
-        Tp=Tp_diag,
-        spike_scale=args.spike_scale,
-        Tmax=10,
-        y0=np.zeros(args.lat_dim),
-    )
+    if args.SNN_init == "SNN":
+        # SNN first and then solver where SNN ends
+        # Initialize simulation
+        sim = Simulation.init_optim(
+            Q=Q_diag,
+            b=b_diag,
+            E=E_diag,
+            Tp=Tp_diag,
+            spike_scale=args.spike_scale,
+            Tmax=10,
+            y0=np.zeros(args.lat_dim),
+        )
 
-    # RUN SIMULATION
-    # run simulation
-    sim.run()
+        # RUN SIMULATION
+        # run simulation
+        sim.run()
 
-    # optimize simulation
-    sim.optimize(Q=Q_diag)
+        # optimize simulation
+        sim.optimize(Q=Q_diag)
+    elif args.SNN_init == "Solver":
+        # Solver first and then SNN where solver ends
+        # Initialize simulation
+        sim_opt = Simulation.init_optim(
+            Q=Q_diag,
+            b=b_diag,
+            E=E_diag,
+            Tp=Tp_diag,
+            spike_scale=args.spike_scale,
+            Tmax=10,
+            y0=np.zeros(args.lat_dim),
+        )
+
+        # optimize simulation
+        sim_opt.optimize(Q=Q_diag)
+        solver_fail = bool(np.any(np.isnan(sim_opt.y_op_lim)))
+
+        # RUN SIMULATION
+        # Initialize simulation with correct initial point
+        sim = Simulation.init_optim(
+            Q=Q_diag,
+            b=b_diag,
+            E=E_diag,
+            Tp=Tp_diag,
+            spike_scale=args.spike_scale,
+            Tmax=10,
+            y0=(
+                0.999 * sim_opt.y_op_lim[:, -1]
+                if not solver_fail
+                else np.zeros(args.lat_dim)
+            ),
+        )
+        # run simulation
+        sim.run()
+
+        # transfer data
+        sim.y_op = sim_opt.y_op
+        sim.y_op_lim = sim_opt.y_op_lim
+        sim.r_op = sim_opt.r_op
+        sim.r_op_lim = sim_opt.r_op_lim
+    else:
+        # Solver first and then SNN independently
+        # Initialize simulation
+        sim_opt = Simulation.init_optim(
+            Q=Q_diag,
+            b=b_diag,
+            E=E_diag,
+            Tp=Tp_diag,
+            spike_scale=args.spike_scale,
+            Tmax=10,
+            y0=np.zeros(args.lat_dim),
+        )
+
+        # optimize simulation
+        sim_opt.optimize(Q=Q_diag)
+
+        # RUN SIMULATION
+        # Initialize simulation
+        sim = Simulation.init_optim(
+            Q=Q_diag,
+            b=b_diag,
+            E=E_diag,
+            Tp=Tp_diag,
+            spike_scale=args.spike_scale,
+            Tmax=10,
+            y0=np.zeros(args.lat_dim),
+        )
+        # run simulation
+        sim.run()
+
+        # transfer data
+        sim.y_op = sim_opt.y_op
+        sim.y_op_lim = sim_opt.y_op_lim
+        sim.r_op = sim_opt.r_op
+        sim.r_op_lim = sim_opt.r_op_lim
 
     # match check
     y_op_lim_from_r_op_lim = (
@@ -112,6 +196,33 @@ if __name__ == "__main__":
     # Plot
     if args.plot:
         sim.plot()
+
+        def estimate_energy(nspikes, neurs):
+            energy_per_syn = 30  # pJ/synapse
+            energy_est = nspikes * neurs * energy_per_syn
+            print("Estimated energy consumption (pJ):", energy_est)
+
+        def estimate_convergence(x):
+            running_mean = np.cumsum(x, axis=1) / np.arange(1, x.shape[1] + 1)
+            delta = np.diff(running_mean, axis=1)
+            rel_change = np.linalg.norm(delta, axis=0) / np.maximum(
+                np.linalg.norm(running_mean[:, :-1], axis=0), 1e-8
+            )
+            tol = 1e-4
+            window_size = 10
+            good = rel_change < tol
+            conv = (
+                np.convolve(good, np.ones(window_size, dtype=int), "valid")
+                == window_size
+            )
+            if np.any(conv):
+                idx = np.argmax(conv) + window_size
+                print("Convergence achieved at index:", idx)
+            else:
+                print("No convergence achieved.")
+
+        estimate_energy(sim.stimes.shape[0], sim.r.shape[0])
+        estimate_convergence(sim.y)
 
     # Transform back to original space
     sim.y = decoder(sim.y)
@@ -175,6 +286,10 @@ if __name__ == "__main__":
             results["spiking_case"] = case
 
         results["solver_match"] = match
+        results["y_op_nan"] = bool(np.any(np.isnan(sim.y_op)))
+        results["y_op_lim_nan"] = bool(np.any(np.isnan(sim.y_op_lim)))
+        results["r_op_nan"] = bool(np.any(np.isnan(sim.r_op)))
+        results["r_op_lim_nan"] = bool(np.any(np.isnan(sim.r_op_lim)))
 
         filepath = "%s.json" % basepath
         with open(filepath, "w") as file_handle:

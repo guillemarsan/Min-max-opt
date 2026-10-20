@@ -21,12 +21,14 @@ if __name__ == "__main__":
         path.mkdir(parents=True, exist_ok=True)
 
         if case == "low_dim":
-            dims, neurs, ncoups, spike_scale, seeds = (
-                [5],
-                [20],
-                [8],
-                [0.25, 0.1, 0.05, 0.02],
-                np.arange(120) + 0,
+            dims, neurs, ncoups, spike_scale, seeds, SNN_init = (
+                [2],
+                [3],
+                [1],
+                # [0.4, 0.25, 0.1, 0.05, 0.02, 0.01],
+                [0.1, 0.05, 0.01],
+                np.arange(480) + 120,
+                "Solver",
             )
         else:
             raise ValueError("Case not recognized")
@@ -59,6 +61,8 @@ if __name__ == "__main__":
                                     + str(s)
                                     + " --spike_scale "
                                     + str(spike)
+                                    + " --SNN_init "
+                                    + SNN_init
                                 )
 
                                 command = "python " + compute_script + " " + args
@@ -92,7 +96,8 @@ if __name__ == "__main__":
                     # "error_r_lim_s_ext",
                 ]:
                     array.append(["error_cont", s])
-                    array.append(["error_cont_one", s])
+                    print("a")
+                    # array.append(["error_cont_one", s])
                 # for s in ["error_y_s", "error_r_s", "error_y_lim_s", "error_r_lim_s"]:
                 #     array.append(["error_disc", s])
                 #     array.append(["error_disc_one", s])
@@ -101,9 +106,22 @@ if __name__ == "__main__":
                     "error_r_final",
                     "error_y_lim_final",
                     "error_r_lim_final",
+                    "error_y_conv",
+                    "error_r_conv",
+                    "error_y_lim_conv",
+                    "error_r_lim_conv",
                 ]:
-                    array.append(["error_scatter", s])
+                    array.append(["error_scatter_nspikes", s])
+                    print("b")
+                for s in [
+                    "error_y_conv",
+                    "error_r_conv",
+                    "error_y_lim_conv",
+                    "error_r_lim_conv",
+                ]:
+                    array.append(["error_scatter_ctime", s])
                 array.append(["conv_exploding", "e"])
+                array.append(["sim_type", "e"])
 
             for case_plot in array:
                 print("Plot " + case_plot[0] + " with " + case_plot[1])

@@ -205,6 +205,10 @@ def all_normal(set: pd.DataFrame):
     set["all_normal"] = bool(all_normal)
     all_match = set["solver_match"].all()
     set["all_match"] = bool(all_match)
+    set["any_y_op_nan"] = bool(set["y_op_nan"].any())
+    set["any_y_op_lim_nan"] = bool(set["y_op_lim_nan"].any())
+    set["any_r_op_nan"] = bool(set["r_op_nan"].any())
+    set["any_r_op_lim_nan"] = bool(set["r_op_lim_nan"].any())
     return set
 
 
@@ -236,14 +240,19 @@ def analyse_prediction(point: pd.Series):
     data = [y, y_op, y_op_lim, r, r_op, r_op_lim]
 
     label_solver_sols(data, point)
+    compute_convergence(data, point)
 
     if point["spiking_case"] in ["normal", "silent"]:
         compute_time_errors(data, point)
 
     if point["spiking_case"] == "normal":
         stimes = load_data(point["basepath"], "stimes")
+        if stimes.shape == (2,):
+            stimes = stimes.reshape(1, 2)
         data.append(stimes)
+        compute_nspikes_energy(data, point)
         compute_spike_errors(data, point)
+        compute_active_set_cond(data, point)
 
     return point
 
@@ -310,8 +319,16 @@ def label_solver_sols(data: list, point: pd.Series):
         acs = active[active > ncoups]
         Wacac = W[np.ix_(acs, acs)]
         point["Wacac_neg"] = np.all(np.linalg.eigvals(Wacac) < 0)
-        if np.all(np.linalg.eigvals(Wacac) < 0):
-            a = 1
+
+    vol = E_diag @ y[:, -1] - Tp
+    point["vol_KKT"] = tostore(np.array(np.linalg.norm(np.min(vol, 0))))
+    compl = r[:, -1] * vol
+    point["compl_KKT"] = tostore(np.array(np.linalg.norm(compl)))
+    active = np.where(r[:, -1] > 1e-2)[0]
+    slack = np.where(vol > -1e-2)[0]
+    # check how many neurons are both active and slacking
+    active_slack = np.intersect1d(active, slack)
+    point["compl_neurs_KKT"] = tostore(np.array(len(active_slack)))
 
     # if not point["r_lim_nan"]:
     #     vol = E @ y_op_lim_from_r_op_lim - Tp
@@ -321,6 +338,103 @@ def label_solver_sols(data: list, point: pd.Series):
     #     point["r_lim_KKT"] = feasr and feasV and compl
     # else:
     #     point["r_lim_KKT"] = False
+
+
+def compute_nspikes_energy(data: list, point: pd.Series):
+    """
+    Compute energy for one simulation
+    Number of spikes and estimated energy
+
+    Parameters
+    ----------
+    data : list
+        List with the simulation data
+
+    point : pd.Series
+        Series with the simulation data
+    """
+
+    r = data[3]
+    stimes = data[6]
+
+    def estimate_energy(nspikes, neurs):
+        energy_per_syn = 30  # pJ/synapse
+        energy_est = nspikes * neurs * energy_per_syn
+        return energy_est
+
+    nspikes = stimes.shape[0]
+    point["nspikes"] = tostore(np.array(nspikes))
+    energy_est = estimate_energy(nspikes, r.shape[0])
+    point["energy_est"] = tostore(np.array(energy_est))
+
+    conv_time = eval(point["conv_time"]) if point["conv_time"] != "nan" else np.inf
+    nspikes_conv = np.sum(stimes[:, 1] <= conv_time)
+    point["nspikes_conv"] = tostore(np.array(nspikes_conv))
+    energy_est_conv = estimate_energy(nspikes_conv, r.shape[0])
+    point["energy_est_conv"] = tostore(np.array(energy_est_conv))
+
+
+def compute_convergence(data: list, point: pd.Series):
+    """
+    Compute convergence time for one simulation
+
+    Parameters
+    ----------
+    data : list
+        List with the simulation data
+
+    point : pd.Series
+        Series with the simulation data
+    """
+
+    y = data[0]
+    dt = point["dt"]
+
+    def estimate_convergence(x):
+        running_mean = np.cumsum(x, axis=1) / np.arange(1, x.shape[1] + 1)
+        delta = np.diff(running_mean, axis=1)
+        rel_change = np.linalg.norm(delta, axis=0) / np.maximum(
+            np.linalg.norm(running_mean[:, :-1], axis=0), 1e-8
+        )
+        tol = 5e-5
+        window_size = 10
+        good = rel_change < tol
+        conv = (
+            np.convolve(good, np.ones(window_size, dtype=int), "valid") == window_size
+        )
+        if np.any(conv):
+            idx = np.argmax(conv) + window_size
+            return idx
+        else:
+            return np.nan
+
+    conv_time = estimate_convergence(y) * dt
+    point["conv_time"] = tostore(np.array(conv_time))
+
+
+def compute_active_set_cond(data: list, point: pd.Series):
+    """
+    Compute whether the condition that the active set
+    remains the same throughout the simulation is fulfilled
+
+    Parameters
+    ----------
+    data : list
+        List with the simulation data
+
+    point : pd.Series
+        Series with the simulation data
+    """
+    r_op_lim = data[5]
+    stimes = data[6]
+
+    if np.isnan(r_op_lim).any():
+        point["active_set_cond"] = np.nan
+    else:
+        active = np.where(r_op_lim > 0)[0]
+        spiking_id = np.unique(stimes[:, 0].astype(int))
+        # check if a value in spiking_id is not in active
+        point["active_set_cond"] = np.all(np.isin(spiking_id, active))
 
 
 def compute_spike_errors(data, point: pd.Series):
@@ -369,8 +483,6 @@ def compute_spike_errors(data, point: pd.Series):
     if stimes.ndim == 1:
         stimes = stimes.reshape(-1, 2)
     stimes_idx = (stimes[:, 1] / dt).astype(int)
-
-    point["nspikes"] = tostore(np.array(stimes.shape[0]))
 
     # Predictions
     y_pred = (y[:, stimes_idx] + y[:, stimes_idx + 1]) / 2
@@ -480,9 +592,12 @@ def compute_time_errors(data: list, point: pd.Series):
     r = data[3]
     r_op = data[4]
     r_op_lim = data[5]
+    conv_idx = (
+        int(np.asarray(eval(point["conv_time"])) / point["dt"])
+        if point["conv_time"] != "nan"
+        else np.nan
+    )
 
-    if point["arg_rand_seed"] == 145:
-        a = 1
     point["error_y"] = tostore(np.linalg.norm((y_op[:, np.newaxis] - y), axis=0) ** 2)
     point["error_y_lim"] = tostore(
         np.linalg.norm((y_op_lim[:, np.newaxis] - y), axis=0) ** 2
@@ -495,9 +610,29 @@ def compute_time_errors(data: list, point: pd.Series):
     point["error_y_lim_final"] = tostore(
         np.array([np.linalg.norm(y_op_lim - y[:, -1]) ** 2])
     )
+    point["error_y_conv"] = (
+        tostore(np.array([np.linalg.norm(y_op - y[:, conv_idx]) ** 2]))
+        if not np.isnan(conv_idx)
+        else tostore(np.array([np.nan]))
+    )
+    point["error_y_lim_conv"] = (
+        tostore(np.array([np.linalg.norm(y_op_lim - y[:, conv_idx]) ** 2]))
+        if not np.isnan(conv_idx)
+        else tostore(np.array([np.nan]))
+    )
     point["error_r_final"] = tostore(np.array([np.linalg.norm(r_op - r[:, -1]) ** 2]))
     point["error_r_lim_final"] = tostore(
         np.array([np.linalg.norm(r_op_lim - r[:, -1]) ** 2])
+    )
+    point["error_r_conv"] = (
+        tostore(np.array([np.linalg.norm(r_op - r[:, conv_idx]) ** 2]))
+        if not np.isnan(conv_idx)
+        else tostore(np.array([np.nan]))
+    )
+    point["error_r_lim_conv"] = (
+        tostore(np.array([np.linalg.norm(r_op_lim - r[:, conv_idx]) ** 2]))
+        if not np.isnan(conv_idx)
+        else tostore(np.array([np.nan]))
     )
 
 
