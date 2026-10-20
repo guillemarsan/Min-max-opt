@@ -1,3 +1,4 @@
+import copy
 import time as time
 from functools import partial
 
@@ -14,7 +15,7 @@ from SCN.utils_neuro import _canon_symmetric
 
 # Type of optimization to plot
 # cos = ["minmax", "canminmax", "QP", "canQP", "dalian"]
-cos = ["canminmax"]
+cos = ["autoencoder"]
 dir = "./data/theory_plots/"
 animate = True
 
@@ -380,7 +381,7 @@ for co in cos:
     if co == "canQP":
         Q = np.array([[1 / 2, 0], [0, 1 / 2]])
         b = np.array([0, 0])
-        y0 = np.array([1, 1])
+        y0 = np.array([1.75, 0.3])
         centergeom = np.array([0.5, 0.5])
     elif co == "QP":
         Q = np.array([[1 / 2, -1 / 2], [-1 / 2, 2]])
@@ -390,7 +391,7 @@ for co in cos:
         Tp = Tp - E @ fact
         E = E @ A
         pts = (np.linalg.inv(A) @ (pts - fact).T).T
-        y0 = np.linalg.inv(A) @ (np.array([1, 1]) - fact)
+        y0 = np.linalg.inv(A) @ (np.array([1.75, 0.3]) - fact)
         centergeom = np.array([0, -1])
     elif co == "canminmax":
         Q = np.array([[1 / 2, 0], [0, -1 / 2]])
@@ -432,12 +433,51 @@ for co in cos:
         y0 = np.array([0.3, 1.5])
         centergeom = np.array([0.5, 0.5])
     elif co == "pers":
-        E = np.array([[1.0, 0.0], [-1.0, 0.0], [0.7873885, 0.6164571]])
-        Tp = 0.5 * np.ones(3)
-        Q = np.array([[0.50179652, 0.0], [0.0, -0.83366482]])
-        b = np.array([0.37328789, 1.32810727])
-        y0 = 0 * np.array([-0.25, -0.25])
+        E = np.array([[1.0, 0.1], [-1, -0.5], [-0.3, 1]])
+        #    [-0.9879338, -0.1548768],
+        #    [-0.9988458,  0.0480317],
+        #    [ 0.4679721, -0.8837433],
+        #    [ 0.785596 ,  0.6187398]])
+        Tp = np.array([1, -0.5, -0.5])
+        Q = np.array([[1 / 2, 0.0], [0.0, -1 / 2]])
+        b = np.array([0, 0])
+        y0 = 1 * np.array([0.5, -0.75])
         centergeom = np.zeros(2)
+    elif co == "silentex":
+        E = np.array([[-0.1, 1], [1, -2], [-1, -2]])
+        Tp = np.array([0.75, 1, -0.5])
+        Q = np.array([[1 / 2, 0.0], [0.0, -1 / 2]])
+        b = np.array([0.1, 0.25])
+        y0 = 1 * np.array([0.75, 0.25])
+        centergeom = np.ones(2) * 0.5
+    elif co == "normalex":
+        E = np.array([[-0.1, 1], [1, -2], [-1, -2]])
+        Tp = np.array([0.75, 1, -0.5])
+        Q = np.array([[1 / 2, 0.0], [0.0, -1 / 2]])
+        b = np.array([0, 0])
+        y0 = 1 * np.array([0.75, 0.25])
+        centergeom = np.ones(2) * 0.5
+    elif co == "inexplodex":
+        E = np.array([[-0.1, 1], [1, -2], [-1, -2]])
+        Tp = np.array([0.2, 1, -0.5])
+        Q = np.array([[1 / 2, 0.0], [0.0, -1 / 2]])
+        b = np.array([0, 0])
+        y0 = 1 * np.array([0.5, 4])
+        centergeom = np.ones(2) * 0.5
+    elif co == "gekko":
+        E = np.array([[1, 0], [2, -1], [-1, -2]])
+        Tp = np.array([0.75, 0.7, -0.75])
+        Q = np.array([[1 / 2, 0.0], [0.0, -1 / 2]])
+        b = np.array([0, 0])
+        y0 = 1 * np.array([1, 0.75])
+        centergeom = np.ones(2) * 0.5
+    elif co == "autoencoder":
+        E = np.array([[-1.366, 0.366], [0.366, -1.366], [-2, -1]])
+        Tp = np.array([0.1366, 1, -1.75])
+        Q = np.array([[1 / 2, 0], [0, 1 / 2]])
+        b = np.array([0, 0])
+        y0 = np.array([1.58, 0.28])
+        centergeom = np.array([0.5, 0.5])
     else:
         E = np.array([[-3 / 4, -1 / 4 - 0.5], [0, -1 / np.sqrt(2)]])
         Tp = np.array([0, -0.5])  # np.array([-0.5, 0])
@@ -452,17 +492,38 @@ for co in cos:
         b=b,
         E=E,
         Tp=Tp,
-        spike_scale=0.02,
+        spike_scale=0.25,
         y0=y0,
         Tmax=5,
         tag=co,
     )
 
-    # run simulation
-    sim.run()
-
     # optimize simulation
     sim.optimize(Q=Q)
+    if co == "inexplodex":
+        sim.y_op_lim[:, -1] = np.array([0.0864, 0.2077])
+
+    if co == "gekko":
+        y0 = 0.999 * np.array([0.75, 0.8])
+        sim2 = Simulation.init_optim(
+            Q=Q,
+            b=b,
+            E=E,
+            Tp=Tp,
+            spike_scale=0.07,
+            y0=y0,
+            Tmax=5,
+            tag=co,
+        )
+        sim2.run()
+        # substitute this value for sim.y_op that is (2,5000)
+        sim2.y_op = np.array([[-0.25], [0.5]]) * np.ones_like(sim.y_op)
+        sim2.y_op_lim = sim.y_op_lim
+        sim2.r_op = sim.r_op
+        sim2.r_op_lim = sim.r_op_lim
+        sim = sim2
+    else:
+        sim.run()
 
     # plot
     sim.plot(centergeom=centergeom)
